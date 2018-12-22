@@ -2,48 +2,132 @@
 import socket
 import struct
 import json
+import os
+import select
+import asyncore
+from io import StringIO
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.bind(('localhost', 8080))
-sock.listen(1)
+class RPCHandler():
+    def __init__(self, sock, addr):
+        self.addr = addr
+        self.handlers = {
+                'ping': self.ping
+                }
+        self.rbuf = StringIO()
 
-def handle_conn(conn, addr, handlers):
-    print(addr, 'coming~')
-    while True:
-        len_prefix = conn.recv(4)
-        if not len_prefix:
-            print(addr, 'this address send nothing, close the connection')
-            conn.close()
-            break
-        length, = struct.unpack('I', len_prefix)
-        body = conn.recv(length)
-        req = json.loads(body)
-        msg = req['msg']
-        params = req['params']
-        print(msg, params)
-        handler = handlers[msg]
-        handler(conn, params)
+    def close(self):
+        print('close this connection: ', self.addr)
+        self.close()
 
-def ping(conn, params):
-    send_res(conn, 'pong', params)
+    def read(self):
+        while True:
+            content = self.recv(1024)
+            if content:
+                self.rbuf.write(content)
+            if len(content) < 1024:
+                break
+        self.handle_rpc()
 
-def send_res(conn, msg, result):
-    res = json.dumps({'msg': msg, 'result': result})
-    len_prefix = struct.pack('I', len(res))
-    conn.sendall(len_prefix)
-    conn.sendall(res.encode('utf-8'))
+    def handle_rpc(self):
+        while True:
+            self.rbuf.seek(0)
+            len_prefix = self.rbuf.read(4)
+            if len(len_prefix) < 4:
+                break
 
-def loop(sock, handlers):
-    while True:
-        conn, addr = sock.accept()
-        handle_conn(conn, addr, handlers)
+            length, = struct.unpack('I', len_prefix)
+            body = self.rbuf(length)
+            if len(body) < length:
+                break
+            req = json.loads(body)
+            msg = req['msg']
+            params = req['params']
+            print(msg, params)
+            handler = self.handlers[msg]
+            handler(params)
+            left = self.rbuf.getvalue()[length + 4:]
+            self.rbuf = StringIO()
+            self.rbuf.write(left)
+        self.rbuf.seek(0, 2)
+
+    def ping(self, params):
+        self.send_res('pong', params)
+
+    def send_res(self, msg, result):
+        res = json.dumps({'msg': msg, 'result': result})
+        len_prefix = struct.pack('I', len(res))
+        self.send(len_prefix)
+        self.send(res.encode('utf-8'))
+
+class RPCServer():
+
+    def __init__(self, host, port):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setblocking(False)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind((host, port))
+        server.listen(1)
+        self.server = server
+        self.inputs = [self.server]
+        self.outputs = []
+        self.queues = {}
+
+    def start(self):
+        while self.inputs:
+            print('waiting...')
+            print('inputs', self.inputs)
+            print('outputs', self.outputs)
+            print('queues', self.queues)
+            rs, ws, exs = select.select(self.inputs, self.outputs, self.inputs)
+            print('readable, writeable, exceptions', rs, ws, exs)
+            if not (rs or ws or exs):
+                print('select has nothings')
+                break
+            for s in rs:
+                if s is self.server:
+                    sock, addr = s.accept()
+                    print('have connection ', addr)
+                    rpc = RPCHandler(sock, addr)
+                    rpc.handle_rpc()
+                    self.inputs.append(sock)
+                    self.queues[sock] = []
+                else:
+                    try:
+                        data = s.recv(1024)
+                    except:
+                        print('closing conn', addr)
+                        if s in self.outputs:
+                            self.outputs.remove(s)
+                        self.inputs.remove(s)
+                        s.close()
+                        del self.queues[s]
+                    else:
+                        if data:
+                            print('receive data ', data, s.getpeername())
+                            self.queues[s].append(data)
+                            if s not in self.outputs:
+                                self.outputs.append(s)
+            for s in ws:
+                try:
+                    next_msg = self.queues[s][0]
+                except Queue.Empty:
+                    print(s.getpeername(), ' queue empty')
+                    self.outputs.removes(s)
+                else:
+                    print('sending ', next_msg, ' to ', s.getpeername())
+                    os.popen('sleep 5').read()
+                    s.send(next_msg)
+
+            for e in exs:
+                print('exception happens ', s.getpeername())
+                self.inputs.remove(s)
+                if s in self.outputs:
+                    self.outputs.remove(s)
+                s.close()
+                del self.queues[s]
 
 if __name__ == '__main__':
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,  1)
-    sock.bind(('localhost', 8080))
-    sock.listen(1)
-    handlers = {
-        'ping': ping
-        }
-    loop(sock, handlers)
+    s = RPCServer('localhost', 8080)
+    s.start()
+
+    #asyncore.loop()
