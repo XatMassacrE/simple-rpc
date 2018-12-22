@@ -75,11 +75,11 @@ class RPCServer():
     def start(self):
         while self.inputs:
             print('waiting...')
-            print('inputs', self.inputs)
-            print('outputs', self.outputs)
-            print('queues', self.queues)
+            # print('inputs', self.inputs)
+            # print('outputs', self.outputs)
+            # print('queues', self.queues)
             rs, ws, exs = select.select(self.inputs, self.outputs, self.inputs)
-            print('readable, writeable, exceptions', rs, ws, exs)
+            # print('readable, writeable, exceptions', rs, ws, exs)
             if not (rs or ws or exs):
                 print('select has nothings')
                 break
@@ -93,7 +93,10 @@ class RPCServer():
                     self.queues[sock] = []
                 else:
                     try:
-                        data = s.recv(1024)
+                        # data = s.recv(1024)
+                        length_prefix = s.recv(4)
+                        length, = struct.unpack("I", length_prefix)
+                        data = s.recv(length)
                     except:
                         print('closing conn', addr)
                         if s in self.outputs:
@@ -110,13 +113,20 @@ class RPCServer():
             for s in ws:
                 try:
                     next_msg = self.queues[s][0]
-                except Queue.Empty:
+                    del self.queues[s][0]
+                except:
                     print(s.getpeername(), ' queue empty')
-                    self.outputs.removes(s)
+                    self.outputs.remove(s)
                 else:
-                    print('sending ', next_msg, ' to ', s.getpeername())
+                    req = json.loads(next_msg)
+                    msg = req['msg']
+                    params = req['params']
+                    res = json.dumps({'msg': 'pong', 'params': params})
+                    print('sending ', res, ' to ', s.getpeername())
                     os.popen('sleep 5').read()
-                    s.send(next_msg)
+                    length_prefix = struct.pack("I", len(res))
+                    s.send(length_prefix)
+                    s.send(res.encode('utf-8'))
 
             for e in exs:
                 print('exception happens ', s.getpeername())
@@ -125,6 +135,7 @@ class RPCServer():
                     self.outputs.remove(s)
                 s.close()
                 del self.queues[s]
+
 
 if __name__ == '__main__':
     s = RPCServer('localhost', 8080)
