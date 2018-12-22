@@ -17,7 +17,7 @@ def rpc(sock, msg, params):
     res_len_body, = struct.unpack('I', res_len_prefix)
     body = sock.recv(res_len_body)
     res = json.loads(body)
-    return res['msg'], res['result']
+    return res['msg'], res['params']
 
 if __name__ == '__main__':
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
